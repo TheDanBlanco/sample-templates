@@ -1,0 +1,280 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CI/CD pipeline for Chicago Summit 2019"
+Parameters:
+  ProjectName:
+    Description: Project's name
+    Type: String
+    Default: anycompany-xyz
+  CFNStackName:
+    Description: Stack name to deploy to
+    Type: String
+    Default: AnyCompany-XYZ
+  ArtifactName:
+    Description: Name of artifact to be consumed
+    Type: String
+    Default: anycompany-xyz-template.yml
+  
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Sid: ''
+            Principal:
+              Service: 'codebuild.amazonaws.com'
+            Action: sts:AssumeRole
+      Policies: 
+        - PolicyName: CodeBuildServiceRolePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - codecommit:GitPush
+                Resource:
+                  - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:*
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub arn:aws:s3:::${ProjectName}-artifact-bucket/*
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: 
+                  - arn:aws:s3:::*
+              - Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - iam:*
+                  - cognito:*
+                  - cognito-idp:*
+                  - cognito-identity:*
+                Resource:
+                  - '*'
+  
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - cloudformation.amazonaws.com
+                - codecommit.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelineServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: "cloudformation:*"
+                Resource: "*"
+              - Effect: Allow
+                Action: 
+                  - "codecommit:*"
+                  - "codebuild:*"
+                Resource: "*"
+              - Effect: Allow
+                Action: "s3:*"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - cognito:*
+                  - cognito-idp:*
+                  - cognito-identity:*
+                  - events:*
+                Resource: '*'
+  
+  AmazonCloudWatchEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        -
+          PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}
+  
+  AmazonCloudWatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${CodeCommit.Name}
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - master
+      Targets:
+        -
+          Arn: 
+            !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${CodePipeline}
+          RoleArn: !GetAtt AmazonCloudWatchEventRole.Arn
+          Id: !Sub ${ProjectName}-AppPipeline
+  
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ProjectName}-artifact-bucket
+  
+  CodeCommit:
+    Type: "AWS::CodeCommit::Repository"
+    Properties:
+      RepositoryName: !Sub ${ProjectName}
+  
+  CodeBuild:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name: !Sub ${ProjectName}-build
+      Source: 
+        GitCloneDepth: 1
+        InsecureSsl: false
+        Location: !GetAtt CodeCommit.CloneUrlHttp
+        Type: "CODECOMMIT"
+      Artifacts: 
+        EncryptionDisabled: false
+        Location: !Ref S3Bucket
+        Name: !Ref ProjectName
+        NamespaceType: "NONE"
+        OverrideArtifactName: false
+        Packaging: "ZIP"
+        Path: ""
+        Type: "S3"
+      Cache: 
+        Type: "NO_CACHE"
+      Environment: 
+        ComputeType: "BUILD_GENERAL1_SMALL"
+        Image: "aws/codebuild/standard:1.0"
+        PrivilegedMode: true
+        Type: "LINUX_CONTAINER"
+      ServiceRole: !Ref CodeBuildServiceRole
+      TimeoutInMinutes: 60
+      QueuedTimeoutInMinutes: 480
+      EncryptionKey: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/s3"
+      BadgeEnabled: true
+      LogsConfig: 
+        CloudWatchLogs: 
+          Status: "ENABLED"
+        S3Logs: 
+          Status: "DISABLED"
+  
+  CodePipeline:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      Name: !Sub ${ProjectName}-pipeline
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore: 
+        Location: !Ref S3Bucket
+        Type: "S3"
+      Stages: 
+      - 
+        Actions: 
+        - 
+          ActionTypeId: 
+            Category: "Source"
+            Owner: "AWS"
+            Provider: "CodeCommit"
+            Version: "1"
+          Configuration: 
+            BranchName: "master"
+            RepositoryName: !GetAtt CodeCommit.Name
+          Name: "Source"
+          Region: !Sub ${AWS::Region}
+          RunOrder: 1
+          OutputArtifacts:
+            - Name: SourceArtifact
+        Name: "Source"
+      - 
+        Actions: 
+        - 
+          ActionTypeId: 
+            Category: "Build"
+            Owner: "AWS"
+            Provider: "CodeBuild"
+            Version: "1"
+          Configuration: 
+            ProjectName: !Ref CodeBuild
+          InputArtifacts: 
+          - Name: 'SourceArtifact'
+          Name: "Build"
+          OutputArtifacts: 
+          - Name: 'BuildArtifact'
+          Region: !Sub ${AWS::Region}
+          RunOrder: 1
+        Name: "Build"
+      - 
+        Actions: 
+        - 
+          ActionTypeId: 
+            Category: "Deploy"
+            Owner: "AWS"
+            Provider: "CloudFormation"
+            Version: "1"
+          Configuration: 
+            ActionMode: "CREATE_UPDATE"
+            Capabilities: "CAPABILITY_AUTO_EXPAND,CAPABILITY_NAMED_IAM,CAPABILITY_IAM"
+            RoleArn: !GetAtt CodePipelineServiceRole.Arn
+            StackName: !Ref CFNStackName
+            TemplatePath: !Sub "BuildArtifact::${ArtifactName}"
+          Name: "CloudFormation"
+          Region: !Sub ${AWS::Region}
+          InputArtifacts:
+            - Name: BuildArtifact
+          RunOrder: 1
+        Name: "Deploy"
+                
+Outputs:
+  CodeCommitHttpsUrl: 
+    Value: !GetAtt CodeCommit.CloneUrlHttp
+    Description: CodeCommit Http endpoint
+  CodeCommitSSHUrl:
+    Value: !GetAtt CodeCommit.CloneUrlSsh
+    Description: CodeCommit ssh endpoint. Ensure your ssh keys are set up to use this endpoint. https://docs.aws.amazon.com/codecommit/latest/userguide/setting-up-ssh-windows.html
+  S3BucketName:
+    Value: !Ref S3Bucket
+    Description: S3 bucket name for your artifacts.
