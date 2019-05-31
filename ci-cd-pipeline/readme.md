@@ -12,3 +12,9 @@ This template has scoped down permissions for CodeBuild and CodePipeline. The fo
 * CodePipelineServiceRole
 
 For ease of editing, I've moved these items to the top of the `Resources` section.
+
+## This template deploys to production without any reservation
+
+If you're interested in doing a different approach, consider changing `            ActionMode: "CREATE_UPDATE"` in the "Deploy" category.
+
+The different action modes are [here](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/continuous-delivery-codepipeline-action-reference.html#w2ab1c13c13b9)
